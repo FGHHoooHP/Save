@@ -1,7 +1,6 @@
 -- Run as a LocalScript (for example, in StarterPlayerScripts).
 -- LeftAngle and RightAngle are exposed as ScreenGui attributes and CODE.lua globals.
 -- The optional hook requires hookmetamethod/newcclosure/getnamecallmethod/setnamecallmethod.
-_G.Kuy = true
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
@@ -45,7 +44,7 @@ local gui = create("ScreenGui", {
 }, playerGui)
 local panel = create("Frame", {
     Name = "Panel", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
-    Size = UDim2.fromOffset(440, 582), BackgroundColor3 = Color3.fromRGB(15, 15, 15),
+    Size = UDim2.fromOffset(440, 720), BackgroundColor3 = Color3.fromRGB(15, 15, 15),
     BorderSizePixel = 0, ClipsDescendants = true,
 }, gui)
 round(panel, 18)
@@ -196,6 +195,9 @@ for index, sideName in ipairs({"Left", "Right"}) do
 end
 
 local angles = {Left = 59, Right = 59}
+local auraEnabled = false
+local auraRadius = 20
+local auraSendWarned = false
 -- Preserve an explicit external disable; enable the merged behavior by default.
 if _G.Kuy == nil then _G.Kuy = true end
 local hookState
@@ -295,26 +297,31 @@ local function bindCodeHook()
     end
     -- Reuse one hook across reruns; its state follows the newest UI.
     hookState = _G.NeverAngleCodeHook
-    if type(hookState) == "table" and hookState.version ~= 5 then
+    if type(hookState) == "table" and hookState.version ~= 8 then
         -- Disable older hooks so their method handling cannot affect this revision.
         hookState.gui = nil
         hookState = nil
     end
     if type(hookState) ~= "table" then
-        hookState = {version = 5}
+        hookState = {version = 8}
         _G.NeverAngleCodeHook = hookState
     end
     hookState.gui = gui
     hookState.angles = angles
     hookState.shouldUseHead = shouldUseHead
+    hookState.auraSending = false
     if not hookState.installed then
         local state = hookState
+        -- Use unpack(Args) while preserving nil entries and trailing arguments.
+        local function unpack(Args)
+            return table.unpack(Args, 1, Args.n)
+        end
         local old
         old = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
             local method = getnamecallmethod()
             -- Include explicit Event:FireServer calls from user scripts as well as game calls.
             -- Helpers never call FireServer, so nested lookups cannot re-enter this branch.
-            if state.gui and _G.Kuy and method == "FireServer" then
+            if state.gui and _G.Kuy and method == "FireServer" and not state.auraSending then
                 local target, hitPart = ...
                 local useHead = false
                 if target ~= "Use" then
@@ -329,8 +336,7 @@ local function bindCodeHook()
                     print("Arg 1:", Args[1])
                     print("Arg 2:", Args[2])
                     setnamecallmethod(method)
-                    -- Keep nil arguments and the original argument count intact.
-                    return old(self, unpack(Args, 1, Args.n))
+                    return old(self, unpack(Args))
                 end
                 setnamecallmethod(method)
             end
@@ -449,7 +455,7 @@ local function resize()
     local camera = workspace.CurrentCamera
     if camera then
         local viewport = camera.ViewportSize
-        baseScale = math.max(0.1, math.min(1, (viewport.X - 24) / 440, (viewport.Y - 24) / 582))
+        baseScale = math.max(0.1, math.min(1, (viewport.X - 24) / 440, (viewport.Y - 24) / 720))
         uiScale.Scale = baseScale
     end
 end
@@ -497,27 +503,222 @@ for _, sideName in ipairs({"Left", "Right"}) do
     sliders[sideName].value.Font = Enum.Font.SciFi
 end
 
+-- Radius is shared by the visible sphere and the player distance filter.
+local auraLabel = text(panel, "KILL AURA / PLAYERS", UDim2.fromOffset(30, 491), UDim2.fromOffset(250, 36), 14, white)
+auraLabel.TextXAlignment = Enum.TextXAlignment.Left
+local auraToggle = create("TextButton", {
+    Name = "AuraToggle", Position = UDim2.fromOffset(310, 494), Size = UDim2.fromOffset(100, 32),
+    Text = "OFF", AutoButtonColor = false, BackgroundColor3 = Color3.fromRGB(31, 31, 31),
+    TextColor3 = white, Font = Enum.Font.SciFi, TextSize = 13, BorderSizePixel = 0, ZIndex = 10,
+}, panel)
+round(auraToggle, 6)
+interactive(auraToggle)
+local rangeLabel = text(panel, "ระยะบาเรีย", UDim2.fromOffset(30, 536), UDim2.fromOffset(235, 22), 13, muted)
+rangeLabel.TextXAlignment = Enum.TextXAlignment.Left
+local rangeValue = text(panel, tostring(auraRadius) .. " studs", UDim2.fromOffset(275, 536), UDim2.fromOffset(135, 22), 13, white)
+rangeValue.TextXAlignment = Enum.TextXAlignment.Right
+local rangeSlider = create("TextButton", {
+    Name = "AuraRadiusSlider", Text = "", BackgroundTransparency = 1, AutoButtonColor = false,
+    Position = UDim2.fromOffset(30, 560), Size = UDim2.fromOffset(380, 30), ZIndex = 10,
+}, panel)
+local rangeTrack = create("Frame", {
+    Position = UDim2.fromOffset(0, 12), Size = UDim2.new(1, 0, 0, 5),
+    BackgroundColor3 = Color3.fromRGB(47, 47, 47), BorderSizePixel = 0, ZIndex = 10,
+}, rangeSlider)
+round(rangeTrack)
+local rangeFill = create("Frame", {
+    Size = UDim2.fromScale(auraRadius / 5000, 1), BackgroundColor3 = accent, BorderSizePixel = 0, ZIndex = 10,
+}, rangeTrack)
+round(rangeFill)
+local rangeKnob = create("Frame", {
+    AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(auraRadius / 5000, 0.5),
+    Size = UDim2.fromOffset(14, 14), BackgroundColor3 = white, BorderSizePixel = 0, ZIndex = 11,
+}, rangeTrack)
+round(rangeKnob)
+text(panel, "0", UDim2.fromOffset(30, 588), UDim2.fromOffset(24, 12), 9, muted)
+local rangeMax = text(panel, "5000", UDim2.fromOffset(366, 588), UDim2.fromOffset(44, 12), 9, muted)
+rangeMax.TextXAlignment = Enum.TextXAlignment.Right
+local rangeDrag
+local auraStatus = text(panel, "ปิดอยู่ · ระยะ 20 studs", UDim2.fromOffset(30, 608), UDim2.fromOffset(380, 22), 11, muted)
+auraStatus.TextXAlignment = Enum.TextXAlignment.Left
+local function setAuraStatus(message)
+    if auraStatus.Text ~= message then auraStatus.Text = message end
+end
+-- One local adornment follows its root automatically; no physics part or frame loop.
+-- API: https://create.roblox.com/docs/reference/engine/classes/SphereHandleAdornment
+local barrier = create("SphereHandleAdornment", {
+    Name = "NeverAuraBarrier", Radius = auraRadius, Color3 = accent, Transparency = 0.9,
+    AlwaysOnTop = false, Visible = false, CFrame = CFrame.new(),
+}, gui)
+local function refreshBarrier()
+    local character = player.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if barrier.Adornee ~= root then barrier.Adornee = root end
+    if barrier.Radius ~= auraRadius then barrier.Radius = auraRadius end
+    local visible = auraEnabled and auraRadius > 0 and root ~= nil and humanoid ~= nil and humanoid.Health > 0
+    if barrier.Visible ~= visible then barrier.Visible = visible end
+end
+local function setAuraEnabled(enabled)
+    auraEnabled = enabled
+    auraSendWarned = false
+    auraToggle.Text = enabled and "ON" or "OFF"
+    gui:SetAttribute("KillAuraEnabled", enabled)
+    refreshBarrier()
+    setAuraStatus((enabled and "เปิดอยู่" or "ปิดอยู่") .. " · ระยะ " .. auraRadius .. " studs")
+end
+connect(auraToggle.Activated, function() setAuraEnabled(not auraEnabled) end)
+local function setAuraRadius(value)
+    local radius = math.clamp(math.floor(value + 0.5), 0, 5000)
+    if radius == auraRadius then return end
+    auraRadius = radius
+    rangeValue.Text = tostring(radius) .. " studs"
+    rangeFill.Size = UDim2.fromScale(radius / 5000, 1)
+    rangeKnob.Position = UDim2.fromScale(radius / 5000, 0.5)
+    gui:SetAttribute("KillAuraRadius", radius)
+    refreshBarrier()
+    setAuraStatus((auraEnabled and "เปิดอยู่" or "ปิดอยู่") .. " · ระยะ " .. radius .. " studs")
+end
+local function updateRadiusDrag(position)
+    if rangeTrack.AbsoluteSize.X <= 0 then return end
+    setAuraRadius((position.X - rangeTrack.AbsolutePosition.X) / rangeTrack.AbsoluteSize.X * 5000)
+end
+connect(rangeSlider.InputBegan, function(input)
+    if not panel.Visible then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    rangeDrag = {input = input, touch = input.UserInputType == Enum.UserInputType.Touch}
+    updateRadiusDrag(input.Position)
+end)
+connect(UserInputService.InputChanged, function(input)
+    if not rangeDrag then return end
+    if (rangeDrag.touch and input == rangeDrag.input) or (not rangeDrag.touch and input.UserInputType == Enum.UserInputType.MouseMovement) then
+        updateRadiusDrag(input.Position)
+    end
+end)
+connect(UserInputService.InputEnded, function(input)
+    if rangeDrag and ((rangeDrag.touch and input == rangeDrag.input) or (not rangeDrag.touch and input.UserInputType == Enum.UserInputType.MouseButton1)) then
+        updateRadiusDrag(input.Position)
+        rangeDrag = nil
+    end
+end)
+connect(UserInputService.WindowFocusReleased, function() rangeDrag = nil end)
+gui:SetAttribute("KillAuraRadius", auraRadius)
+setAuraEnabled(false)
+
+-- Include custom player Models even when Player.Character is not linked to them.
+local function resolveAuraPlayer(target)
+    local owner = Players:GetPlayerFromCharacter(target)
+    if owner then return owner end
+    local namedPlayer = Players:FindFirstChild(target.Name)
+    if namedPlayer and namedPlayer:IsA("Player") then return namedPlayer end
+    return nil
+end
+local auraTargets
+local function ensureAuraTargets()
+    if auraTargets then return end
+    auraTargets = {}
+    local function add(instance)
+        if instance:IsA("Model") then auraTargets[instance] = true end
+    end
+    connect(workspace.DescendantAdded, add)
+    connect(workspace.DescendantRemoving, function(instance) auraTargets[instance] = nil end)
+    for _, instance in ipairs(workspace:GetDescendants()) do add(instance) end
+end
+
+local function auraTick()
+    refreshBarrier()
+    if not auraEnabled then return end
+    if auraRadius == 0 then setAuraStatus("ระยะ 0 · ไม่ส่งคำสั่งตี"); return end
+    local character = player.Character
+    local ownRoot = character and character:FindFirstChild("HumanoidRootPart")
+    local ownHumanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not ownRoot or not ownHumanoid or ownHumanoid.Health <= 0 then
+        setAuraStatus("รอตัวละครเกิดใหม่")
+        return
+    end
+    -- This code was generated by Cobalt
+    -- https://gitlab.com/upio/cobalt
+    -- Target only player-owned character Models currently present in workspace.
+    local bat = character:FindFirstChild("BaseballBat")
+    local batScript = bat and bat:FindFirstChild("LocalScript")
+    local Event = batScript and batScript:FindFirstChild("Damage")
+    if not Event or not Event:IsA("RemoteEvent") then
+        setAuraStatus("ถือ BaseballBat เพื่อใช้งาน")
+        return
+    end
+    local origin = ownRoot.Position
+    local radiusSquared = auraRadius * auraRadius
+    local batch = {}
+    local found = 0
+    local queuedPlayers = {}
+    ensureAuraTargets()
+    for target in pairs(auraTargets) do
+        if not auraEnabled then break end
+        if not target:IsDescendantOf(workspace) then
+            auraTargets[target] = nil
+        else
+            local targetPlayer = resolveAuraPlayer(target)
+            if targetPlayer and targetPlayer ~= player and target ~= character and not target:IsDescendantOf(character) then
+                local humanoid = target:FindFirstChildOfClass("Humanoid")
+                local head = target:FindFirstChild("Head")
+                local root = target:FindFirstChild("HumanoidRootPart") or target.PrimaryPart
+                    or target:FindFirstChild("Torso") or target:FindFirstChild("UpperTorso") or head
+                if root and root:IsA("BasePart") and head and head:IsA("BasePart") then
+                    found = found + 1
+                    if not humanoid or humanoid.Health > 0 then
+                        local delta = root.Position - origin
+                        local distanceSquared = delta.X * delta.X + delta.Y * delta.Y + delta.Z * delta.Z
+                        if distanceSquared <= radiusSquared and not queuedPlayers[targetPlayer] then
+                            queuedPlayers[targetPlayer] = true
+                            table.insert(batch, {target = target, root = root, humanoid = humanoid, owner = targetPlayer})
+                        end
+                    end
+                end
+            end
+        end
+    end
+    -- Queue every selected player in this cycle. A failed send cannot stop the batch.
+    for _, entry in ipairs(batch) do
+        task.defer(function(target, root, humanoid, owner)
+            if not auraEnabled or auraRadius <= 0 or player.Character ~= character
+                or ownHumanoid.Health <= 0 or (humanoid and (humanoid.Health <= 0 or humanoid.Parent ~= target))
+                or not target:IsDescendantOf(workspace) or not root:IsDescendantOf(workspace)
+                or owner.Parent ~= Players or not Event:IsDescendantOf(character) then return end
+            local delta = root.Position - ownRoot.Position
+            if delta.X * delta.X + delta.Y * delta.Y + delta.Z * delta.Z > auraRadius * auraRadius then return end
+            if hookState and hookState.gui == gui then hookState.auraSending = true end
+            local ok, message = pcall(function() Event:FireServer(target, "Head") end)
+            if hookState and hookState.gui == gui then hookState.auraSending = false end
+            if not ok and not auraSendWarned then
+                auraSendWarned = true
+                warn("Never Kill Aura send: " .. tostring(message))
+            end
+        end, entry.target, entry.root, entry.humanoid, entry.owner)
+    end
+    setAuraStatus("พบ " .. found .. " ตัวละคร · ในระยะ " .. #batch .. " คน · " .. auraRadius .. " studs")
+end
+
 -- Static background keeps the UI idle until the user interacts.
-create("Frame", {Position = UDim2.fromOffset(24, 510), Size = UDim2.fromOffset(392, 1),
+create("Frame", {Position = UDim2.fromOffset(24, 642), Size = UDim2.fromOffset(392, 1),
     BackgroundColor3 = Color3.fromRGB(67, 67, 67), BackgroundTransparency = 0.4, BorderSizePixel = 0, ZIndex = 3}, panel)
-local keyLabel = text(panel, "คีย์ลัดซ่อน / เปิด", UDim2.fromOffset(28, 520), UDim2.fromOffset(205, 25), 13, muted)
+local keyLabel = text(panel, "คีย์ลัดซ่อน / เปิด", UDim2.fromOffset(28, 652), UDim2.fromOffset(205, 25), 13, muted)
 keyLabel.TextXAlignment = Enum.TextXAlignment.Left
 local keyButton = create("TextButton", {
-    Name = "KeybindButton", Position = UDim2.fromOffset(257, 518), Size = UDim2.fromOffset(155, 29),
+    Name = "KeybindButton", Position = UDim2.fromOffset(257, 650), Size = UDim2.fromOffset(155, 29),
     BackgroundColor3 = Color3.fromRGB(31, 31, 31), TextColor3 = white,
     TextSize = 11, Font = Enum.Font.SciFi, AutoButtonColor = false, BorderSizePixel = 0, ZIndex = 10,
 }, panel)
 round(keyButton, 6)
 interactive(keyButton)
 local footerHint = "ลากแถบบนเพื่อย้าย • มุมซ้าย / ขวาขยับพร้อมกัน"
-local footer = text(panel, footerHint, UDim2.fromOffset(20, 552), UDim2.fromOffset(400, 18), 11, muted)
+local footer = text(panel, footerHint, UDim2.fromOffset(20, 690), UDim2.fromOffset(400, 18), 11, muted)
 local reopen = create("TextButton", {
     Name = "Reopen", AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 18, 1, -18),
-    Size = UDim2.fromOffset(148, 38), Text = "NEVER / OPEN", Visible = false,
+    Size = UDim2.fromOffset(32, 32), Text = "N", Visible = false,
     BackgroundColor3 = Color3.fromRGB(20, 20, 20), TextColor3 = white,
     TextSize = 12, Font = Enum.Font.SciFi, BorderSizePixel = 0, AutoButtonColor = false, ZIndex = 20,
 }, gui)
-round(reopen, 8)
+round(reopen)
 interactive(reopen)
 local toggleKey = Enum.KeyCode.RightControl
 local capturingKey = false
@@ -528,7 +729,7 @@ local function refreshKey()
 end
 local function setVisible(visible)
     isShown = visible
-    drag, windowDrag = nil, nil
+    drag, windowDrag, rangeDrag = nil, nil, nil
     capturingKey = false
     refreshKey()
     footer.Text = footerHint
@@ -568,7 +769,7 @@ local function clampWindow(center)
     local camera = workspace.CurrentCamera
     if not camera then return center end
     local viewport = camera.ViewportSize
-    local half = Vector2.new(440, 582) * baseScale / 2
+    local half = Vector2.new(440, 720) * baseScale / 2
     return Vector2.new(math.clamp(center.X, half.X + 6, math.max(half.X + 6, viewport.X - half.X - 6)),
         math.clamp(center.Y, half.Y + 6, math.max(half.Y + 6, viewport.Y - half.Y - 6)))
 end
@@ -599,15 +800,21 @@ refreshKey()
 gui:SetAttribute("UIVisible", true)
 
 local uiWorker
+local auraWorker
 local uiAlive = true
 connect(gui.Destroying, function()
     uiAlive = false
+    rangeDrag = nil
+    auraEnabled = false
+    if auraWorker then task.cancel(auraWorker); auraWorker = nil end
+    barrier:Destroy()
     if uiWorker then task.cancel(uiWorker); uiWorker = nil end
     drag = nil
     if hookState and hookState.gui == gui then
         hookState.gui = nil
         hookState.angles = nil
         hookState.shouldUseHead = nil
+        hookState.auraSending = false
     end
     if cameraConnection then cameraConnection:Disconnect() end
     for _, tween in pairs(activeTweens) do tween:Cancel() end
@@ -642,6 +849,34 @@ uiWorker = task.spawn(function()
                 -- Avoid a fast error/retry loop if a UI update cannot complete.
                 updateInterval = 0.5
             end
+        end
+    end
+end)
+
+-- Five range checks per second, with no per-frame scans or per-hit console spam.
+auraWorker = task.spawn(function()
+    local warned = false
+    local interval = 0.2
+    local function reportAuraError(message)
+        if not warned then
+            warned = true
+            warn("Never Kill Aura: " .. tostring(message))
+        end
+        setAuraStatus("เกิดข้อผิดพลาด · ตรวจ Output")
+    end
+    while task.wait(interval) do
+        if not uiAlive then break end
+        if auraEnabled then
+            local ok = xpcall(auraTick, reportAuraError)
+            if hookState and hookState.gui == gui then hookState.auraSending = false end
+            if ok then
+                warned = false
+                interval = 0.2
+            else
+                interval = 1
+            end
+        else
+            interval = 0.2
         end
     end
 end)
